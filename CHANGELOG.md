@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.6.0
+
+Two defects reported from a real install on a second machine.
+
+- **Authenticated users could be locked out of the UI.** The plugin resolved the frontend
+  `index.html` by resolving `@deepseek-ai/dsh-web-frontend` from its own module location.
+  That layout assumption holds when the plugin sits in a workspace checkout and breaks
+  elsewhere: the resolution lands on a package with no `dist/`, and every authenticated
+  request to `/` returns "the Web frontend is not built" instead of the app. The frontend
+  path is deployment knowledge the Host already computed, so the plugin now reads
+  `distIndex` from the `frontend-static` fiber through `ctx.registry` and only falls back to
+  resolving the package (now verifying the file exists) when that is unavailable.
+- **A stale account record bypassed first-run setup.** When a password record existed,
+  `/` served the app to token-authenticated sessions and `/login` served a form, so the
+  owner never saw account creation. No account must mean first-run setup, whoever is
+  asking: `/` now renders the setup page before any token or session handling.
+
 ## 0.5.0
 
 Interface pass on the Host-rendered pages and the security panel, from a measured UI audit.

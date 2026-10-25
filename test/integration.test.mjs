@@ -131,6 +131,8 @@ async function startHarness(options = {}) {
     connection,
     credentials,
     loader: undefined,
+    // 反射入口：真实进程里用来读取 Host 自己算好的前端路径。
+    registry: options.registry ?? { values: () => [] },
   }
 
   apply(ctx, config)
@@ -784,6 +786,30 @@ describe('用启动令牌进入后的首次建账户', () => {
     return `${cookieName(authority)}=${value}`
   }
 
+  test('尚无账户时，带令牌或旧会话访问首页仍先进首次设置', async () => {
+    const cookie = await tokenSession()
+
+    // 带启动令牌
+    const withToken = await request(harness.origin, '/?token=abc', { headers: { cookie } })
+    assert.equal(withToken.status, 200)
+    assert.match(withToken.body, /Create your account/, '无账户时带令牌也必须先进设置页')
+    assert.doesNotMatch(withToken.body, /DeepSeek Harness/, '不该直接放行到应用')
+
+    // 只带一条有效会话
+    const withSession = await request(harness.origin, '/', { headers: { cookie } })
+    assert.equal(withSession.status, 200)
+    assert.match(withSession.body, /Create your account/, '无账户时有效会话也必须先设置')
+  })
+
+  test('账户建立后，带令牌访问才直接进应用', async () => {
+    const cookie = await tokenSession()
+    await postJson(harness.origin, '/web-auth/setup',
+      { username: 'sun', password: 'firstpass1', confirm: 'firstpass1' }, cookie)
+
+    const r = await request(harness.origin, '/?token=abc')
+    assert.equal(r.status, 303, '账户就绪后令牌照常交换')
+  })
+
   test('状态端点报告尚无账户', async () => {
     const cookie = await tokenSession()
     const r = await request(harness.origin, '/web-auth/status', { headers: { cookie } })
@@ -849,5 +875,58 @@ describe('用启动令牌进入后的首次建账户', () => {
       assert.equal(JSON.parse(r.body).error, 'noAccount')
     }
     assert.equal(harness.credentials.records.has('web-auth/password'), false, '不应悄悄创建记录')
+  })
+})
+
+describe('已认证用户取回应用外壳', () => {
+  let harness
+  let distIndex
+  let tempDir
+
+  before(async () => {
+    const { mkdtemp, writeFile } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    tempDir = await mkdtemp(join(tmpdir(), 'wpa-dist-'))
+    distIndex = join(tempDir, 'index.html')
+    await writeFile(distIndex, '<!doctype html><html><head><title>Host App</title></head><body>app</body></html>')
+
+    // 模拟 Host 的 frontend-static：它的 fiber 配置里带着真实 dist 路径。
+    const registry = {
+      values: () => [{ name: 'frontend-static', fibers: [{ config: { distIndex } }] }],
+    }
+    harness = await startHarness({ registry })
+    await postForm(harness.origin, '/setup',
+      { username: 'admin', password: 'correct horse', confirm: 'correct horse' })
+  })
+  after(async () => {
+    await harness.close()
+    const { rm } = await import('node:fs/promises')
+    if (tempDir !== undefined) await rm(tempDir, { recursive: true, force: true })
+  })
+
+  test('优先使用 Host 自己算好的 distIndex，而不是插件自己猜的路径', async () => {
+    const cookie = cookieFrom(await postForm(harness.origin, '/login',
+      { username: 'admin', password: 'correct horse' }))
+    const r = await request(harness.origin, '/', { headers: { cookie } })
+    assert.equal(r.status, 200)
+    assert.match(r.body, /<title>Host App<\/title>/, r.body.slice(0, 200))
+    // 插件还要补上相对资源所需的 base
+    assert.match(r.body, /<base href="\.\/">/)
+  })
+
+  test('Host 没有提供 distIndex 时不崩，给出可读诊断', async () => {
+    const other = await startHarness({ registry: { values: () => [] } })
+    try {
+      await postForm(other.origin, '/setup',
+        { username: 'admin', password: 'correct horse', confirm: 'correct horse' })
+      const cookie = cookieFrom(await postForm(other.origin, '/login',
+        { username: 'admin', password: 'correct horse' }))
+      const r = await request(other.origin, '/', { headers: { cookie } })
+      assert.equal(r.status, 500)
+      assert.match(r.body, /frontend/i, '错误文案要指明前端资源问题')
+    } finally {
+      await other.close()
+    }
   })
 })
