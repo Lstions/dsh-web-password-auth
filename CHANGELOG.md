@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.5.0
+
+Interface pass on the Host-rendered pages and the security panel, from a measured UI audit.
+
+- **The entry pages now use the product's own colors.** The primary button was blue while the
+  product's primary is near-black (`#0f1115` light, `#f9fafb` dark); the page carried 17
+  hand-picked literals and no product token. It now copies the values behind
+  `--dsw-alias-*` rather than inventing a palette. Font weight dropped to 500, radius to 8px,
+  and control height to 36px to match.
+- **Keyboard focus is visible** on every input and button. Previously the pages removed the
+  outline and only recolored the border.
+- **Failed sign-in is announced**: the error carries `role="alert"`, and focus moves to the
+  password field so a retry needs no mouse.
+- **Muted text now clears WCAG AA** (5.4:1, was 3.7:1); the palette uses the product's
+  secondary ink for labels and hints.
+- Panel: **the QR code no longer overflows**. At a 480px viewport the content column is
+  196px, so a fixed 236px image forced horizontal scrolling; it now scales (`max-width`).
+- Panel: loading state uses a spinner instead of a line of text, inputs and buttons have
+  focus rings, disabled primary buttons dim as a whole instead of leaving 3.7:1 text, and
+  both save buttons share one weight.
+- **Changing the password now explains the sign-out**: the redirect carries
+  `?notice=passwordChanged` and the sign-in page says every session was signed out.
+
 ## 0.4.0
 
 - **The security section also renders on the plugin's own detail page** (`Plugins → Web

@@ -87,6 +87,13 @@ is on (the default), and both refuse once an account exists.
 To start over, remove the `web-auth/password` record from `$DSH_HOME/.credentials.yaml`;
 the next visit offers account creation again.
 
+## Visual consistency
+
+The Host-rendered pages cannot read `--dsw-alias-*`: the client stylesheet is not loaded
+before sign-in. They therefore carry the values behind those tokens as plain literals —
+copied, not invented. A previous revision used a blue primary button while the product's is
+near-black, which made the sign-in page look like a different app.
+
 ## The settings page
 
 Once signed in, **Settings → Security** (安全) is the normal way to manage the account.
