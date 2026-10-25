@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Web Password Auth",
+    "description": "Sign in to the Web UI with a username and password instead of the launch token, with persistent sessions and optional two-factor authentication."
+  }
+}

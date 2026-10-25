@@ -1,0 +1,42 @@
+# The dsh-web-password-auth bundle patch: one row declaring this plugin.
+#
+# Installing the package is enough to activate it. The launcher reconciles
+# installed dependencies against `dsh.profile.bundles` and auto-selects any
+# dependency that declares a bundle (`reconcileProfilePlugins` in dsh-app-boot),
+# so one command both installs and enables the plugin:
+#
+#   dsh plugin --profile <name> add /absolute/path/to/this/repo
+#
+# IMPORTANT — the host caps session-cookie lifetime with
+# `connection.cookieMaxAgeDays` (default 30). A cookie whose `expiresAt -
+# issuedAt` exceeds that cap is rejected with 401, so `sessionDays` below must
+# stay at or under it. To get year-long sessions, raise BOTH: this row's
+# `sessionDays` and the profile patch's connection row, e.g.
+#
+#   - id: connection
+#     config:
+#       trustedHosts: !!js ctx.webStartup.trustedHosts
+#       cookieMaxAgeDays: 365
+#
+# A patch REPLACES a targeted row's whole `config` rather than merging into it,
+# so restate every key that row needs.
+
+- insert:
+    - id: web-password-auth
+      name: 'dsh-web-password-auth'
+      config:
+        # Browser session lifetime in days. Must be <= connection.cookieMaxAgeDays.
+        sessionDays: 365
+        # Before an account exists, only this machine may create it. Keep true:
+        # anything reachable earlier would become the owner.
+        bootstrapLoopbackOnly: true
+        # Failed sign-ins before the source address is locked out.
+        maxAttempts: 5
+        # Lockout duration in milliseconds.
+        lockoutMs: 300000
+        # Rejected shorter passwords.
+        minPasswordLength: 8
+        # Issuer name shown in authenticator apps.
+        totpIssuer: 'DSH'
+        # Offer two-factor enrolment on the account page.
+        totpAvailable: true
