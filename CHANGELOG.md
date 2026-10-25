@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0
+
+- **The security section also renders on the plugin's own detail page** (`Plugins → Web
+  Password Auth`), not just in Settings. The `plugins.detail.section` slot renders on every
+  plugin's page, so the entry matches the subject and returns null for anything that is not
+  this package.
+- Fixed: the detail-page section drew its own heading on top of the component's, showing
+  "Sign-in and security" twice.
+
 ## 0.3.1
 
 - **Create the password account from the settings panel.** `dsh web` prints a `?token=`

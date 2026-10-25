@@ -101,11 +101,54 @@ test('apply 注册字典并占用 settings.section', () => {
   assert.equal(dictionaries.length, 1, '应注册字典')
   assert.equal(dictionaries[0][0], 'web-password-auth')
   assert.ok('zh' in dictionaries[0][1] && 'en' in dictionaries[0][1], '中英双语都要有')
-  assert.equal(registered.length, 1)
-  assert.equal(registered[0].options.name, 'settings.section')
-  assert.equal(registered[0].options.id, 'web-password-auth')
-  assert.equal(registered[0].options.locale, 'web-password-auth')
-  assert.equal(typeof registered[0].options.label(), 'string', '导航文案必须是字符串')
+
+  // 两个入口：设置 → 安全，以及 插件 → 本插件 的详情页
+  assert.equal(registered.length, 2, '应注册两个界面入口')
+  const bySlot = Object.fromEntries(registered.map(r => [r.options.name, r.options]))
+  assert.equal(bySlot['settings.section'].id, 'web-password-auth')
+  assert.equal(bySlot['settings.section'].locale, 'web-password-auth')
+  assert.equal(typeof bySlot['settings.section'].label(), 'string', '导航文案必须是字符串')
+  assert.equal(bySlot['plugins.detail.section'].id, 'web-password-auth.detail')
+})
+
+test('插件详情页只在本插件的页面上渲染', () => {
+  const mine = [
+    { kind: 'bundle', pkg: { name: 'dsh-web-password-auth' } },
+    { kind: 'row', pkg: { name: 'dsh-web-password-auth' }, row: { rowId: 'web-password-auth', moduleName: 'dsh-web-password-auth' } },
+  ]
+  for (const subject of mine) {
+    assert.equal(clientModule.belongsToUs(subject), true, JSON.stringify(subject))
+  }
+  const others = [
+    undefined,
+    null,
+    {},
+    { kind: 'bundle', pkg: { name: 'dsh-skill-mcp-panel' } },
+    { kind: 'row', pkg: { name: 'other' }, row: { rowId: 'x', moduleName: 'dsh-mnemon' } },
+    { kind: 'item', id: 'some-official-item' },
+  ]
+  for (const subject of others) {
+    assert.equal(clientModule.belongsToUs(subject), false, JSON.stringify(subject))
+  }
+})
+
+test('插件详情页对他人的插件渲染 null，对自己的渲染区块', () => {
+  const other = render(react.createElement(clientModule.PluginDetailSection, {
+    subject: { kind: 'bundle', pkg: { name: 'dsh-mnemon' } },
+    t: clientModule.translator(clientModule.ZH),
+  }))
+  assert.equal(other, '', '不属于本插件时必须什么都不渲染')
+
+  const mine = render(react.createElement(clientModule.PluginDetailSection, {
+    subject: { kind: 'bundle', pkg: { name: 'dsh-web-password-auth' } },
+    t: clientModule.translator(clientModule.ZH),
+  }))
+  assert.ok(mine.includes('wpa_detail'), '应画出区块外壳')
+  // 服务端渲染只有初始的加载态：标题与账户控件要等浏览器里的 status 请求返回。
+  assert.ok(mine.includes('读取中'), '首帧应是加载态')
+  // 标题只画一次（曾因外层再画一个 h2 而重复）
+  assert.equal((mine.match(/登录与安全|Sign-in and security/g) ?? []).length, 0,
+    '加载态不应出现标题，避免与组件内部标题重复')
 })
 
 test('就绪态渲染出全部区块（这一节之前是空白）', () => {

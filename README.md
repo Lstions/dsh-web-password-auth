@@ -101,7 +101,11 @@ the page already has, so it needs no separate authorization step:
 | Turn off two-factor | Requires a current code |
 | Sign out | Revokes the current session immediately, server-side |
 
-Account management lives **only** in this panel — there is no standalone `/account` page.
+The same section also appears on the plugin's own page under **Plugins → Web Password Auth**,
+so people who find the plugin there can manage the account without hunting for it in Settings.
+It renders nothing on other plugins' pages.
+
+Account management lives **only** in those two in-app surfaces — there is no standalone `/account` page.
 The only Host-rendered pages are the ones that must exist before the app can load:
 sign-in (`/login`) and first-run account creation (`/setup`).
 
