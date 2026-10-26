@@ -169,6 +169,13 @@ async function startHarness(options = {}) {
     res.end()
   })
 
+  // 真实环境里 fallback 是宿主的 frontend-static（SPA 静态服务）。插件把 `/`
+  // 交还宿主后，请求就落在这里——测试需要一个等价物。
+  webServer.registerFallback((req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+    res.end('<!doctype html><title>host fallback</title>')
+  })
+
   await new Promise((resolve) => { server.listen(0, '127.0.0.1', resolve) })
   const port = server.address().port
 
@@ -915,16 +922,63 @@ describe('已认证用户取回应用外壳', () => {
     assert.match(r.body, /<base href="\.\/">/)
   })
 
-  test('Host 没有提供 distIndex 时不崩，给出可读诊断', async () => {
-    const other = await startHarness({ registry: { values: () => [] } })
+  test('Host 的 distIndex 指向不存在的文件时会被跳过，而不是直接报错', async () => {
+    // 复现真实故障：frontend-static 的配置指向一个已经被删掉/没构建的路径。
+    // 旧实现拿到就用，于是已认证用户看到 "the Web frontend is not built"。
+    const { mkdtemp, writeFile } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const dir = await mkdtemp(join(tmpdir(), 'wpa-stale-'))
+    const real = join(dir, 'real.html')
+    await writeFile(real, '<!doctype html><title>Real App</title>')
+
+    const registry = {
+      values: () => [{
+        name: 'frontend-static',
+        fibers: [
+          { config: { distIndex: join(dir, 'gone.html') } }, // 陈旧路径
+          { config: { distIndex: real } },                    // 真实可用路径
+        ],
+      }],
+    }
+    const other = await startHarness({ registry })
     try {
       await postForm(other.origin, '/setup',
         { username: 'admin', password: 'correct horse', confirm: 'correct horse' })
       const cookie = cookieFrom(await postForm(other.origin, '/login',
         { username: 'admin', password: 'correct horse' }))
       const r = await request(other.origin, '/', { headers: { cookie } })
-      assert.equal(r.status, 500)
-      assert.match(r.body, /frontend/i, '错误文案要指明前端资源问题')
+      assert.equal(r.status, 200)
+      assert.match(r.body, /Real App/, '应跳过不存在的候选，用下一个可用的')
+    } finally {
+      await other.close()
+      const { rm } = await import('node:fs/promises')
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('找不到前端产物时把 / 交还宿主，而不是让界面打不开', async () => {
+    // 这台 harness 不带 distIndex，且插件自身位置也解析不到前端包。
+    const other = await startHarness({ registry: { values: () => [] } })
+    try {
+      await postForm(other.origin, '/setup',
+        { username: 'admin', password: 'correct horse', confirm: 'correct horse' })
+      const cookie = cookieFrom(await postForm(other.origin, '/login',
+        { username: 'admin', password: 'correct horse' }))
+
+      // 第一次：释放 index 路由并重定向，让浏览器重新请求
+      const first = await request(other.origin, '/', { headers: { cookie } })
+      assert.equal(first.status, 302, '应把请求交还宿主而不是 500')
+      assert.equal(first.headers.get('location'), '/')
+
+      // 第二次：`/` 已不在本插件的路由表里，交给 fallback（真实环境即宿主的
+      // 前端静态服务），界面能正常打开。
+      const second = await request(other.origin, '/', { headers: { cookie } })
+      assert.equal(second.status, 200)
+      assert.match(second.body, /host fallback/, '应由宿主接手')
+
+      // 交还只影响 index 两条路由，登录等仍由本插件提供
+      assert.equal((await request(other.origin, '/login')).status, 200)
     } finally {
       await other.close()
     }

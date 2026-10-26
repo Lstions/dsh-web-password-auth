@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.1
+
+Fixes for `the Web frontend is not built` reported from a second machine after finishing
+setup — the app shell was unreachable there.
+
+- **Candidates are verified before use.** The Host's configured `distIndex` was returned
+  unchecked; when it pointed at a path that no longer exists, every authenticated request
+  to `/` failed with that message. Every candidate is now checked for existence first.
+- **More layouts are covered.** Besides the package name, the resolution now probes a
+  source checkout's `apps/web/dist`, a flat `node_modules` install, and the pnpm store,
+  starting from the running entry point, the working directory, and the plugin itself.
+- **Failing to locate the index no longer breaks the UI.** If nothing resolves, the plugin
+  releases `/` and `/index.html` back to the Host and redirects once; the Host's own static
+  server then serves the app, and the login and setup pages keep working. A missing path
+  degrades the login gate, never the app.
+
 ## 0.6.0
 
 Two defects reported from a real install on a second machine.
