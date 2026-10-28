@@ -998,3 +998,61 @@ describe('闸门故障时堵死（fail closed）', () => {
     }
   })
 })
+
+// ── 已登录的人不该再看到登录页 ──────────────────────────────────────────
+//
+// 手动访问或收藏了 /login 的已登录用户必须被送回应用；否则页面看起来像
+// "会话失效了"，而实际上一直是登录态。
+describe('已登录时不再渲染登录页', () => {
+  /** 建账户并拿到一条已认证会话。 */
+  async function signedIn(harness) {
+    const { mintCookieValue, parseSigningSecret } = await import('../lib/crypto.js')
+    const key = parseSigningSecret(harness.credentials.records.get(SIGNING_KEY))
+    const authority = `${AUTHORITY_HEADER}:${harness.port}`
+    const now = Date.now()
+    const session = `${cookieName(authority)}=${mintCookieValue(key, authority, now, now + 86_400_000)}`
+    const created = await postJson(harness.origin, '/web-auth/setup',
+      { username: 'sun', password: 'firstpass1', confirm: 'firstpass1' }, session)
+    assert.equal(created.status, 200, created.body)
+    return session
+  }
+
+  test('已登录访问 /login 重定向回应用，而不是显示登录表单', async () => {
+    const harness = await startHarness()
+    try {
+      const cookie = await signedIn(harness)
+      const r = await request(harness.origin, '/login', { headers: { cookie } })
+      assert.equal(r.status, 303, '已登录访问 /login 必须重定向')
+      assert.equal(r.headers.get('location'), './')
+      assert.doesNotMatch(r.body, /name="password"/, '不该渲染登录表单')
+    } finally {
+      await harness.close()
+    }
+  })
+
+  test('未登录访问 /login 仍然显示登录表单', async () => {
+    const harness = await startHarness()
+    try {
+      await signedIn(harness)
+      const r = await request(harness.origin, '/login')
+      assert.equal(r.status, 200)
+      assert.match(r.body, /name="password"/)
+    } finally {
+      await harness.close()
+    }
+  })
+
+  test('登出后访问 /login 显示登录表单（守卫不会把人挡在门外）', async () => {
+    const harness = await startHarness()
+    try {
+      const cookie = await signedIn(harness)
+      const out = await request(harness.origin, '/logout', { method: 'POST', headers: { cookie } })
+      assert.equal(out.status, 303)
+      const r = await request(harness.origin, '/login', { headers: { cookie } })
+      assert.equal(r.status, 200)
+      assert.match(r.body, /name="password"/, '会话已吊销，必须能看到登录表单')
+    } finally {
+      await harness.close()
+    }
+  })
+})
