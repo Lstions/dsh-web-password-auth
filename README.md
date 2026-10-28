@@ -55,6 +55,25 @@ cookie with 401. To get year-long sessions, raise both in your profile patch
 | `totpIssuer` | `'DSH'` | Issuer name shown in authenticator apps |
 | `totpAvailable` | `true` | Offer two-factor enrolment on the account page |
 
+## Host compatibility
+
+The plugin never reads the frontend dist, never renders the index, and never claims the
+`webServer` fallback seat. It registers two exact routes (`/` and `/index.html`), checks the
+session, and hands an authenticated request to whichever fallback the Host installed.
+
+Both fallback shapes the Host has shipped are supported:
+
+| Host | Fallback type | Handled by |
+|---|---|---|
+| up to `0.2.1` | `(req, res) => void` | called directly |
+| `0.2.2` and later | `{ resource(request, peer) }` returning a Fetch `Response` | request built, resource called without a peer, response written back |
+
+`set-cookie` is appended rather than overwritten, so launch-token exchange keeps every cookie
+it returns. Old and new Hosts run the same build.
+
+If the Host registered no fallback at all, an authenticated request receives a readable 500.
+The plugin fails closed: it never releases the shell unguarded.
+
 ## Where the password is stored
 
 In the Harness credential store (`$DSH_HOME/.credentials.yaml`, mode 0600, written
