@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.2
+
+Fixes `the Web frontend is not built` on hosts whose `webServer.renderIndex` takes a
+second `peer` argument — the reported failure happened after finishing setup, leaving the
+app unreachable while `/login` still worked.
+
+- **Pass `peer` to `renderIndex`.** Newer hosts use it to collect index injection rows and
+  throw when it is missing; the plugin called the one-argument form, and the resulting
+  exception surfaced as "the frontend is not built". The plugin now passes
+  `connection.browserPeer`, exactly as the host does. Verified against the affected host's
+  own build: the one-argument call throws, the two-argument call succeeds and keeps the
+  injected rows.
+- **Degrade instead of failing.** Without a `browserPeer` (older hosts) it uses the
+  one-argument signature; if that is refused, it serves the index as-is rather than
+  returning an error. A missing injection beats an unusable UI.
+- If the index still cannot be read, `/` and `/index.html` are handed back to the host and
+  a fixed diagnostic file is written for reporting, instead of serving a bare error page.
+
 ## 0.6.1
 
 Fixes for `the Web frontend is not built` reported from a second machine after finishing

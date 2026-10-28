@@ -87,12 +87,21 @@ async function startHarness(options = {}) {
       fallback = handler
       return () => { fallback = undefined }
     },
-    renderIndex(html) {
+    renderIndex(html, peer) {
+      if (options.renderIndexCalls !== undefined) options.renderIndexCalls.push([html, peer])
+      // 新版 Host 用 peer 收集 index 注入行，缺它时内部 emit 会抛错。
+      // 这里复现那条约束，好让"漏传 peer"在测试里直接失败。
+      if (options.requirePeer === true && peer === undefined) {
+        throw new Error('cannot collect injections without a peer')
+      }
+      // 模拟宿主的真实渲染：真的往 head 里注入一行。
       return html.replace('</head>', '<script>globalThis.__INJECTED__ = true</script></head>')
     },
   }
 
   const connection = {
+    // 新版 Host 暴露的代表浏览器的 Peer；默认提供，可用 browserPeer: false 去掉。
+    ...(options.browserPeer === false ? {} : { browserPeer: { principal: { kind: 'owner' } } }),
     /** 等价语义：这里只做"Host 是 loopback 就通过"，跨站校验不在本测试范围。 */
     requestRejection(req) {
       const host = req.headers.host
@@ -982,5 +991,94 @@ describe('已认证用户取回应用外壳', () => {
     } finally {
       await other.close()
     }
+  })
+})
+
+describe('兼容新版 Host 的 renderIndex(html, peer)', () => {
+  /**
+   * 新版 Host 的 `renderIndex` 需要第二个参数 `peer`：内部用它收集 index 注入行，
+   * 漏传时 emit 抛错，插件会把异常误报成"前端读不出来"，已认证用户就打不开界面。
+   * 旧版 Host 只要一个参数。
+   *
+   * 这条约束用一个会抛错的 renderIndex 复现（`requirePeer`），因此只要调用形态
+   * 退回单参数，这个套件立刻失败。
+   */
+  let harness
+  let calls
+  let tempDir
+  let distIndex
+
+  before(async () => {
+    const { mkdtemp, writeFile } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    tempDir = await mkdtemp(join(tmpdir(), 'wpa-peer-'))
+    distIndex = join(tempDir, 'index.html')
+    await writeFile(distIndex, '<!doctype html><html><head><title>App</title></head><body>b</body></html>')
+
+    calls = []
+    harness = await startHarness({
+      registry: { values: () => [{ name: 'frontend-static', fibers: [{ config: { distIndex } }] }] },
+      renderIndexCalls: calls,
+      requirePeer: true,
+    })
+    await postForm(harness.origin, '/setup',
+      { username: 'admin', password: 'correct horse', confirm: 'correct horse' })
+  })
+  after(async () => {
+    await harness.close()
+    const { rm } = await import('node:fs/promises')
+    if (tempDir !== undefined) await rm(tempDir, { recursive: true, force: true })
+  })
+
+  test('调用时带上 peer，且页面正常返回', async () => {
+    const cookie = cookieFrom(await postForm(harness.origin, '/login',
+      { username: 'admin', password: 'correct horse' }))
+    const r = await request(harness.origin, '/', { headers: { cookie } })
+
+    assert.equal(r.status, 200, `应正常出页面，实际 ${r.status}: ${r.body.slice(0, 120)}`)
+    assert.match(r.body, /<title>App<\/title>/)
+    // 宿主的注入行保留
+    assert.match(r.body, /__INJECTED__/, '宿主的 index 注入必须生效')
+
+    assert.ok(calls.length > 0, 'renderIndex 应被调用')
+    assert.equal(calls[0].length, 2, '必须传两个实参')
+    assert.notEqual(calls[0][1], undefined, 'peer 不能是 undefined')
+  })
+})
+
+describe('旧版 Host（无 browserPeer）也能正常出页面', () => {
+  let harness
+  let tempDir
+
+  before(async () => {
+    const { mkdtemp, writeFile } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    tempDir = await mkdtemp(join(tmpdir(), 'wpa-old-'))
+    const distIndex = join(tempDir, 'index.html')
+    await writeFile(distIndex, '<!doctype html><html><head><title>Old</title></head><body>b</body></html>')
+
+    harness = await startHarness({
+      browserPeer: false, // 旧宿主没有这个属性
+      registry: { values: () => [{ name: 'frontend-static', fibers: [{ config: { distIndex } }] }] },
+      // 旧宿主的 renderIndex 只接受一个参数，不会因为缺 peer 抛错
+      requirePeer: false,
+    })
+    await postForm(harness.origin, '/setup',
+      { username: 'admin', password: 'correct horse', confirm: 'correct horse' })
+  })
+  after(async () => {
+    await harness.close()
+    const { rm } = await import('node:fs/promises')
+    if (tempDir !== undefined) await rm(tempDir, { recursive: true, force: true })
+  })
+
+  test('走单参数签名，页面正常返回', async () => {
+    const cookie = cookieFrom(await postForm(harness.origin, '/login',
+      { username: 'admin', password: 'correct horse' }))
+    const r = await request(harness.origin, '/', { headers: { cookie } })
+    assert.equal(r.status, 200, r.body.slice(0, 120))
+    assert.match(r.body, /<title>Old<\/title>/)
   })
 })
