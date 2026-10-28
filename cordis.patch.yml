@@ -7,19 +7,21 @@
 #
 #   dsh plugin --profile <name> add /absolute/path/to/this/repo
 #
-# IMPORTANT — the host caps session-cookie lifetime with
+# IMPORTANT — the Host caps session-cookie lifetime with
 # `connection.cookieMaxAgeDays` (default 30). A cookie whose `expiresAt -
 # issuedAt` exceeds that cap is rejected with 401, so `sessionDays` below must
-# stay at or under it. To get year-long sessions, raise BOTH: this row's
-# `sessionDays` and the profile patch's connection row, e.g.
+# stay at or under it.
 #
-#   - id: connection
-#     config:
-#       trustedHosts: !!js ctx.webStartup.trustedHosts
-#       cookieMaxAgeDays: 365
+# This patch raises that cap to match `sessionDays`, which is what makes "sign
+# in once, stay signed in until sign-out" actually hold. Without it the Host
+# silently truncates every session to 30 days. A patch REPLACES a targeted
+# row's whole `config` rather than merging into it, so the connection row below
+# restates every key it needs (`trustedHosts` is preserved from the bundle).
 #
-# A patch REPLACES a targeted row's whole `config` rather than merging into it,
-# so restate every key that row needs.
+# If you already override the connection row in your own profile patch, keep
+# `cookieMaxAgeDays` at least as large as `sessionDays` there; the plugin also
+# reads the Host's effective value and shortens its own sessions to match, so a
+# mismatch can never produce an unusable cookie.
 
 - insert:
     - id: web-password-auth
@@ -40,3 +42,11 @@
         totpIssuer: 'DSH'
         # Offer two-factor enrolment on the account page.
         totpAvailable: true
+
+# Raise the Host's browser-cookie cap so long-lived sessions survive. This row
+# must stay AFTER the insert above; it targets the connection row the bundle
+# already declared.
+- id: connection
+  config:
+    trustedHosts: !!js ctx.webStartup.trustedHosts
+    cookieMaxAgeDays: 365
