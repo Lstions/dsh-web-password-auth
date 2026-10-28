@@ -1,6 +1,6 @@
 {
   "name": "dsh-web-password-auth",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "private": false,
   "description": "Username and password sign-in for the DeepSeek Harness Web UI, with persistent sessions, an in-app security settings page, and optional TOTP two-factor authentication",
   "type": "module",

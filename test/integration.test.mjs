@@ -152,16 +152,41 @@ async function startHarness(options = {}) {
   // 顺序必须一致，否则测不到真实的接管行为。
   // 真实宿主 frontend-static 的 fallback：对 index 路径先调 authorizeIndex
   // （启动令牌在这里被兑换成会话 cookie 并 303），通过后才渲染 index。
+  // 宿主对 fallback 有两种形态：旧版函数、新版 `{ resource }`。
+  // options.resourceFallback 选新版，其余默认旧版。
   // options.noHostFallback：模拟"这个组装没挂前端静态服务"，用于验证堵死而非放行。
   if (options.noHostFallback !== true) {
-    webServer.registerFallback((req, res) => {
-      const pathname = new URL(req.url ?? '/', 'http://x').pathname
-      if (pathname === '/' || pathname === '/index.html') {
-        if (!connection.authorizeIndex(req, res)) return
-      }
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-      res.end(options.shellBody ?? '<!doctype html><title>host fallback</title>')
-    })
+    if (options.resourceFallback === true) {
+      // 新版形态：返回 Fetch Response，由调用方写回。
+      const body = options.shellBody ?? '<!doctype html><title>host fallback</title>'
+      webServer.registerFallback({
+        resource: (request, peer) => {
+          const url = new URL(request.url)
+          if ((url.pathname === '/' || url.pathname === '/index.html') && peer === undefined) {
+            // 与真实宿主一致：HTTP 请求（无 peer）走令牌兑换。
+            if (url.searchParams.has('token') && options.tokenExchange !== false) {
+              return Promise.resolve(new Response(null, {
+                status: 303,
+                headers: { location: './', 'set-cookie': 'dsh-auth-test=v1.exchanged' },
+              }))
+            }
+          }
+          return Promise.resolve(new Response(body, {
+            status: 200,
+            headers: { 'content-type': 'text/html; charset=utf-8' },
+          }))
+        },
+      })
+    } else {
+      webServer.registerFallback((req, res) => {
+        const pathname = new URL(req.url ?? '/', 'http://x').pathname
+        if (pathname === '/' || pathname === '/index.html') {
+          if (!connection.authorizeIndex(req, res)) return
+        }
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+        res.end(options.shellBody ?? '<!doctype html><title>host fallback</title>')
+      })
+    }
   }
 
   apply(ctx, config)
@@ -191,7 +216,24 @@ async function startHarness(options = {}) {
       return
     }
     if (fallback !== undefined) {
-      void fallback(req, res)
+      // 两种形态都要分发，与真实 webserver 的 responderFor 一致。
+      if (typeof fallback === 'function') {
+        void fallback(req, res)
+        return
+      }
+      void (async () => {
+        const headers = new Headers()
+        for (const [n, v] of Object.entries(req.headers)) {
+          for (const item of typeof v === 'string' ? [v] : v ?? []) headers.append(n, item)
+        }
+        const response = await fallback.resource(
+          new Request(`http://${req.headers.host ?? 'localhost'}${req.url ?? '/'}`, { method: req.method, headers }),
+        )
+        res.statusCode = response.status
+        for (const [n, v] of response.headers) res.setHeader(n, v)
+        const buffer = Buffer.from(await response.arrayBuffer())
+        res.end(buffer.length === 0 ? undefined : buffer)
+      })()
       return
     }
     res.writeHead(404)
@@ -206,6 +248,8 @@ async function startHarness(options = {}) {
     origin: `http://127.0.0.1:${port}`,
     credentials,
     logs,
+    /** 暴露 webServer，供测试替换座位上的处理器来验证故障路径。 */
+    __webServer: webServer,
     async close() {
       for (const dispose of disposers) await dispose()
       await new Promise((resolve) => { server.close(resolve) })
@@ -1051,6 +1095,95 @@ describe('已登录时不再渲染登录页', () => {
       const r = await request(harness.origin, '/login', { headers: { cookie } })
       assert.equal(r.status, 200)
       assert.match(r.body, /name="password"/, '会话已吊销，必须能看到登录表单')
+    } finally {
+      await harness.close()
+    }
+  })
+})
+
+// ── 宿主 fallback 的两种形态都必须能转交 ────────────────────────────────
+//
+// 新版宿主把 fallback 从函数改成了 `{ resource(request, peer) }`，返回 Fetch
+// Response 并由调用方写回。插件若只认函数形态，会把新宿主判成"没有前端"，
+// 已登录用户直接吃到 500——界面完全打不开。这里把两种形态都钉住。
+describe('两种 fallback 形态都能转交', () => {
+  /** 建账户并拿到一条已认证会话。 */
+  async function signedIn(harness) {
+    const { mintCookieValue, parseSigningSecret } = await import('../lib/crypto.js')
+    const key = parseSigningSecret(harness.credentials.records.get(SIGNING_KEY))
+    const authority = `${AUTHORITY_HEADER}:${harness.port}`
+    const now = Date.now()
+    const session = `${cookieName(authority)}=${mintCookieValue(key, authority, now, now + 86_400_000)}`
+    const created = await postJson(harness.origin, '/web-auth/setup',
+      { username: 'sun', password: 'firstpass1', confirm: 'firstpass1' }, session)
+    assert.equal(created.status, 200, created.body)
+    return session
+  }
+
+  test('新版 { resource } 形态：已登录拿到宿主的外壳', async () => {
+    const marker = '<!doctype html><title>RESOURCE-SHELL</title>'
+    const harness = await startHarness({ resourceFallback: true, shellBody: marker })
+    try {
+      const cookie = await signedIn(harness)
+      const r = await request(harness.origin, '/', { headers: { cookie } })
+      assert.equal(r.status, 200)
+      assert.equal(r.body, marker, '外壳必须逐字节来自宿主 resource')
+    } finally {
+      await harness.close()
+    }
+  })
+
+  test('新版 { resource } 形态：/index.html 同样转交', async () => {
+    const marker = '<!doctype html><title>RESOURCE-INDEX</title>'
+    const harness = await startHarness({ resourceFallback: true, shellBody: marker })
+    try {
+      const cookie = await signedIn(harness)
+      const r = await request(harness.origin, '/index.html', { headers: { cookie } })
+      assert.equal(r.status, 200)
+      assert.equal(r.body, marker)
+    } finally {
+      await harness.close()
+    }
+  })
+
+  test('新版 { resource } 形态：未登录仍只给登录页，不泄露外壳', async () => {
+    const harness = await startHarness({ resourceFallback: true, shellBody: '<title>SECRET-RESOURCE</title>' })
+    try {
+      await signedIn(harness)
+      const r = await request(harness.origin, '/')
+      assert.equal(r.status, 200)
+      assert.match(r.body, /name="password"/)
+      assert.doesNotMatch(r.body, /SECRET-RESOURCE/)
+    } finally {
+      await harness.close()
+    }
+  })
+
+  test('新版 { resource } 形态：令牌照常兑换（303 与 Set-Cookie 都要透传）', async () => {
+    const harness = await startHarness({ resourceFallback: true })
+    try {
+      await signedIn(harness)
+      const r = await request(harness.origin, '/?token=abc')
+      assert.equal(r.status, 303, '令牌必须由宿主兑换')
+      assert.equal(r.headers.get('location'), './')
+      assert.match(r.headers.get('set-cookie') ?? '', /dsh-auth-test=v1\.exchanged/,
+        '宿主的 Set-Cookie 必须原样透传，否则兑换后依然没有会话')
+    } finally {
+      await harness.close()
+    }
+  })
+
+  test('新版 { resource } 形态：resource 抛错时不吞掉，暴露为失败', async () => {
+    const harness = await startHarness({ resourceFallback: true })
+    try {
+      const cookie = await signedIn(harness)
+      // 把座位的 resource 换成一个会抛错的实现，模拟宿主内部故障。
+      harness.__webServer.fallback = {
+        resource: () => Promise.reject(new Error('host resource exploded')),
+      }
+      const r = await request(harness.origin, '/', { headers: { cookie } })
+      // 不能假装成功（200 空壳）；抛错应冒到服务器层的 400/500 处理。
+      assert.notEqual(r.status, 200, '资源故障绝不能伪装成成功')
     } finally {
       await harness.close()
     }
