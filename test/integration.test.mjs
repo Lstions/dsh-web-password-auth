@@ -83,9 +83,13 @@ async function startHarness(options = {}) {
       table.set(route.path, route)
       return () => { table.delete(route.path) }
     },
+    /** 真实宿主把 fallback 存在实例字段上，插件靠读取它来包装。 */
+    get fallback() { return fallback },
+    set fallback(value) { fallback = value },
     registerFallback(handler) {
+      if (fallback !== undefined) throw new Error('webserver: fallback already registered')
       fallback = handler
-      return () => { fallback = undefined }
+      return () => { if (fallback === handler) fallback = undefined }
     },
     renderIndex(html, peer) {
       if (options.renderIndexCalls !== undefined) options.renderIndexCalls.push([html, peer])
@@ -144,6 +148,22 @@ async function startHarness(options = {}) {
     registry: options.registry ?? { values: () => [] },
   }
 
+  // 真实组装里宿主的 frontend-static 先注册座位，插件随后接管它当作认证闸门。
+  // 顺序必须一致，否则测不到真实的接管行为。
+  // 真实宿主 frontend-static 的 fallback：对 index 路径先调 authorizeIndex
+  // （启动令牌在这里被兑换成会话 cookie 并 303），通过后才渲染 index。
+  // options.noHostFallback：模拟"这个组装没挂前端静态服务"，用于验证堵死而非放行。
+  if (options.noHostFallback !== true) {
+    webServer.registerFallback((req, res) => {
+      const pathname = new URL(req.url ?? '/', 'http://x').pathname
+      if (pathname === '/' || pathname === '/index.html') {
+        if (!connection.authorizeIndex(req, res)) return
+      }
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+      res.end(options.shellBody ?? '<!doctype html><title>host fallback</title>')
+    })
+  }
+
   apply(ctx, config)
   // 执行 effect 回调，拿到 dispose 函数
   for (const effect of effects) {
@@ -176,13 +196,6 @@ async function startHarness(options = {}) {
     }
     res.writeHead(404)
     res.end()
-  })
-
-  // 真实环境里 fallback 是宿主的 frontend-static（SPA 静态服务）。插件把 `/`
-  // 交还宿主后，请求就落在这里——测试需要一个等价物。
-  webServer.registerFallback((req, res) => {
-    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-    res.end('<!doctype html><title>host fallback</title>')
   })
 
   await new Promise((resolve) => { server.listen(0, '127.0.0.1', resolve) })
@@ -802,19 +815,19 @@ describe('用启动令牌进入后的首次建账户', () => {
     return `${cookieName(authority)}=${value}`
   }
 
-  test('尚无账户时，带令牌或旧会话访问首页仍先进首次设置', async () => {
+  test('尚无账户时，带有效会话访问首页仍先进首次设置', async () => {
     const cookie = await tokenSession()
-
-    // 带启动令牌
-    const withToken = await request(harness.origin, '/?token=abc', { headers: { cookie } })
-    assert.equal(withToken.status, 200)
-    assert.match(withToken.body, /Create your account/, '无账户时带令牌也必须先进设置页')
-    assert.doesNotMatch(withToken.body, /DeepSeek Harness/, '不该直接放行到应用')
-
-    // 只带一条有效会话
     const withSession = await request(harness.origin, '/', { headers: { cookie } })
     assert.equal(withSession.status, 200)
     assert.match(withSession.body, /Create your account/, '无账户时有效会话也必须先设置')
+  })
+
+  // 启动令牌是**完整旁路**（本机备用入口）。它必须始终能兑换，否则忘记口令时
+  // 本机再也进不去应用。无账户也不例外——兑换后浏览器拿到会话，再由 `/` 的
+  // 首次设置分支接管，两条路径不冲突。
+  test('带令牌的请求始终交宿主兑换，不被设置页拦截', async () => {
+    const r = await request(harness.origin, '/?token=abc')
+    assert.equal(r.status, 303, '令牌请求必须走到宿主，由它下发会话并重定向')
   })
 
   test('账户建立后，带令牌访问才直接进应用', async () => {
@@ -894,191 +907,94 @@ describe('用启动令牌进入后的首次建账户', () => {
   })
 })
 
-describe('已认证用户取回应用外壳', () => {
-  let harness
-  let distIndex
-  let tempDir
 
-  before(async () => {
-    const { mkdtemp, writeFile } = await import('node:fs/promises')
-    const { tmpdir } = await import('node:os')
-    const { join } = await import('node:path')
-    tempDir = await mkdtemp(join(tmpdir(), 'wpa-dist-'))
-    distIndex = join(tempDir, 'index.html')
-    await writeFile(distIndex, '<!doctype html><html><head><title>Host App</title></head><body>app</body></html>')
-
-    // 模拟 Host 的 frontend-static：它的 fiber 配置里带着真实 dist 路径。
-    const registry = {
-      values: () => [{ name: 'frontend-static', fibers: [{ config: { distIndex } }] }],
-    }
-    harness = await startHarness({ registry })
-    await postForm(harness.origin, '/setup',
-      { username: 'admin', password: 'correct horse', confirm: 'correct horse' })
-  })
-  after(async () => {
-    await harness.close()
-    const { rm } = await import('node:fs/promises')
-    if (tempDir !== undefined) await rm(tempDir, { recursive: true, force: true })
-  })
-
-  test('优先使用 Host 自己算好的 distIndex，而不是插件自己猜的路径', async () => {
-    const cookie = cookieFrom(await postForm(harness.origin, '/login',
-      { username: 'admin', password: 'correct horse' }))
-    const r = await request(harness.origin, '/', { headers: { cookie } })
-    assert.equal(r.status, 200)
-    assert.match(r.body, /<title>Host App<\/title>/, r.body.slice(0, 200))
-    // 插件还要补上相对资源所需的 base
-    assert.match(r.body, /<base href="\.\/">/)
-  })
-
-  test('Host 的 distIndex 指向不存在的文件时会被跳过，而不是直接报错', async () => {
-    // 复现真实故障：frontend-static 的配置指向一个已经被删掉/没构建的路径。
-    // 旧实现拿到就用，于是已认证用户看到 "the Web frontend is not built"。
-    const { mkdtemp, writeFile } = await import('node:fs/promises')
-    const { tmpdir } = await import('node:os')
-    const { join } = await import('node:path')
-    const dir = await mkdtemp(join(tmpdir(), 'wpa-stale-'))
-    const real = join(dir, 'real.html')
-    await writeFile(real, '<!doctype html><title>Real App</title>')
-
-    const registry = {
-      values: () => [{
-        name: 'frontend-static',
-        fibers: [
-          { config: { distIndex: join(dir, 'gone.html') } }, // 陈旧路径
-          { config: { distIndex: real } },                    // 真实可用路径
-        ],
-      }],
-    }
-    const other = await startHarness({ registry })
-    try {
-      await postForm(other.origin, '/setup',
-        { username: 'admin', password: 'correct horse', confirm: 'correct horse' })
-      const cookie = cookieFrom(await postForm(other.origin, '/login',
-        { username: 'admin', password: 'correct horse' }))
-      const r = await request(other.origin, '/', { headers: { cookie } })
-      assert.equal(r.status, 200)
-      assert.match(r.body, /Real App/, '应跳过不存在的候选，用下一个可用的')
-    } finally {
-      await other.close()
-      const { rm } = await import('node:fs/promises')
-      await rm(dir, { recursive: true, force: true })
-    }
-  })
-
-  test('找不到前端产物时把 / 交还宿主，而不是让界面打不开', async () => {
-    // 这台 harness 不带 distIndex，且插件自身位置也解析不到前端包。
-    const other = await startHarness({ registry: { values: () => [] } })
-    try {
-      await postForm(other.origin, '/setup',
-        { username: 'admin', password: 'correct horse', confirm: 'correct horse' })
-      const cookie = cookieFrom(await postForm(other.origin, '/login',
-        { username: 'admin', password: 'correct horse' }))
-
-      // 第一次：释放 index 路由并重定向，让浏览器重新请求
-      const first = await request(other.origin, '/', { headers: { cookie } })
-      assert.equal(first.status, 302, '应把请求交还宿主而不是 500')
-      assert.equal(first.headers.get('location'), '/')
-
-      // 第二次：`/` 已不在本插件的路由表里，交给 fallback（真实环境即宿主的
-      // 前端静态服务），界面能正常打开。
-      const second = await request(other.origin, '/', { headers: { cookie } })
-      assert.equal(second.status, 200)
-      assert.match(second.body, /host fallback/, '应由宿主接手')
-
-      // 交还只影响 index 两条路由，登录等仍由本插件提供
-      assert.equal((await request(other.origin, '/login')).status, 200)
-    } finally {
-      await other.close()
-    }
-  })
-})
-
-describe('兼容新版 Host 的 renderIndex(html, peer)', () => {
+// ── 闸门的故障模式：必须**堵死**，绝不静默放行 ───────────────────────────
+//
+// 这是本插件最重要的安全不变量。任何一种"找不到宿主前端"的情形都不能让
+// 未认证的请求拿到应用外壳——否则插件等于没装。
+describe('闸门故障时堵死（fail closed）', () => {
   /**
-   * 新版 Host 的 `renderIndex` 需要第二个参数 `peer`：内部用它收集 index 注入行，
-   * 漏传时 emit 抛错，插件会把异常误报成"前端读不出来"，已认证用户就打不开界面。
-   * 旧版 Host 只要一个参数。
+   * 建立账户并取得一条已认证的会话 cookie。
    *
-   * 这条约束用一个会抛错的 renderIndex 复现（`requirePeer`），因此只要调用形态
-   * 退回单参数，这个套件立刻失败。
+   * 设置端点本身要求已认证（它是设置面板的接口，不是公开注册口），所以先用
+   * 宿主密钥签一条会话——等价于"已经用启动令牌进过应用"。
    */
-  let harness
-  let calls
-  let tempDir
-  let distIndex
+  async function login(harness) {
+    const { mintCookieValue, parseSigningSecret } = await import('../lib/crypto.js')
+    const key = parseSigningSecret(harness.credentials.records.get(SIGNING_KEY))
+    const authority = `${AUTHORITY_HEADER}:${harness.port}`
+    const now = Date.now()
+    const session = `${cookieName(authority)}=${mintCookieValue(key, authority, now, now + 86_400_000)}`
 
-  before(async () => {
-    const { mkdtemp, writeFile } = await import('node:fs/promises')
-    const { tmpdir } = await import('node:os')
-    const { join } = await import('node:path')
-    tempDir = await mkdtemp(join(tmpdir(), 'wpa-peer-'))
-    distIndex = join(tempDir, 'index.html')
-    await writeFile(distIndex, '<!doctype html><html><head><title>App</title></head><body>b</body></html>')
+    const created = await postJson(harness.origin, '/web-auth/setup',
+      { username: 'sun', password: 'firstpass1', confirm: 'firstpass1' }, session)
+    assert.equal(created.status, 200, created.body)
+    return session
+  }
 
-    calls = []
-    harness = await startHarness({
-      registry: { values: () => [{ name: 'frontend-static', fibers: [{ config: { distIndex } }] }] },
-      renderIndexCalls: calls,
-      requirePeer: true,
-    })
-    await postForm(harness.origin, '/setup',
-      { username: 'admin', password: 'correct horse', confirm: 'correct horse' })
-  })
-  after(async () => {
-    await harness.close()
-    const { rm } = await import('node:fs/promises')
-    if (tempDir !== undefined) await rm(tempDir, { recursive: true, force: true })
-  })
-
-  test('调用时带上 peer，且页面正常返回', async () => {
-    const cookie = cookieFrom(await postForm(harness.origin, '/login',
-      { username: 'admin', password: 'correct horse' }))
-    const r = await request(harness.origin, '/', { headers: { cookie } })
-
-    assert.equal(r.status, 200, `应正常出页面，实际 ${r.status}: ${r.body.slice(0, 120)}`)
-    assert.match(r.body, /<title>App<\/title>/)
-    // 宿主的注入行保留
-    assert.match(r.body, /__INJECTED__/, '宿主的 index 注入必须生效')
-
-    assert.ok(calls.length > 0, 'renderIndex 应被调用')
-    assert.equal(calls[0].length, 2, '必须传两个实参')
-    assert.notEqual(calls[0][1], undefined, 'peer 不能是 undefined')
-  })
-})
-
-describe('旧版 Host（无 browserPeer）也能正常出页面', () => {
-  let harness
-  let tempDir
-
-  before(async () => {
-    const { mkdtemp, writeFile } = await import('node:fs/promises')
-    const { tmpdir } = await import('node:os')
-    const { join } = await import('node:path')
-    tempDir = await mkdtemp(join(tmpdir(), 'wpa-old-'))
-    const distIndex = join(tempDir, 'index.html')
-    await writeFile(distIndex, '<!doctype html><html><head><title>Old</title></head><body>b</body></html>')
-
-    harness = await startHarness({
-      browserPeer: false, // 旧宿主没有这个属性
-      registry: { values: () => [{ name: 'frontend-static', fibers: [{ config: { distIndex } }] }] },
-      // 旧宿主的 renderIndex 只接受一个参数，不会因为缺 peer 抛错
-      requirePeer: false,
-    })
-    await postForm(harness.origin, '/setup',
-      { username: 'admin', password: 'correct horse', confirm: 'correct horse' })
-  })
-  after(async () => {
-    await harness.close()
-    const { rm } = await import('node:fs/promises')
-    if (tempDir !== undefined) await rm(tempDir, { recursive: true, force: true })
+  test('宿主没有注册前端 fallback 时，已登录请求得到可读的 500 而不是 404 或无外壳', async () => {
+    const harness = await startHarness({ noHostFallback: true })
+    try {
+      const cookie = await login(harness)
+      const r = await request(harness.origin, '/', { headers: { cookie } })
+      // 关键：绝不能是 200 的应用外壳，也绝不能是"看起来正常"的空响应。
+      assert.equal(r.status, 500)
+      assert.match(r.body, /no frontend fallback/)
+      assert.match(r.body, /web-password-auth/)
+    } finally {
+      await harness.close()
+    }
   })
 
-  test('走单参数签名，页面正常返回', async () => {
-    const cookie = cookieFrom(await postForm(harness.origin, '/login',
-      { username: 'admin', password: 'correct horse' }))
-    const r = await request(harness.origin, '/', { headers: { cookie } })
-    assert.equal(r.status, 200, r.body.slice(0, 120))
-    assert.match(r.body, /<title>Old<\/title>/)
+  test('宿主没有前端 fallback 时，未登录仍然只拿到登录页（不放行）', async () => {
+    const harness = await startHarness({ noHostFallback: true })
+    try {
+      await login(harness)
+      const r = await request(harness.origin, '/')
+      assert.equal(r.status, 200)
+      assert.match(r.body, /Sign in|name="password"/)
+      assert.doesNotMatch(r.body, /no frontend fallback/)
+    } finally {
+      await harness.close()
+    }
+  })
+
+  test('已登录请求真的被转交给宿主自己的外壳（不是插件自造的页面）', async () => {
+    const marker = '<!doctype html><title>SENTINEL-HOST-SHELL</title>'
+    const harness = await startHarness({ shellBody: marker })
+    try {
+      const cookie = await login(harness)
+      const r = await request(harness.origin, '/', { headers: { cookie } })
+      assert.equal(r.status, 200)
+      assert.equal(r.body, marker, '外壳必须逐字节来自宿主')
+    } finally {
+      await harness.close()
+    }
+  })
+
+  test('已登录访问 /index.html 同样被转交宿主', async () => {
+    const marker = '<!doctype html><title>INDEX-HTML-SHELL</title>'
+    const harness = await startHarness({ shellBody: marker })
+    try {
+      const cookie = await login(harness)
+      const r = await request(harness.origin, '/index.html', { headers: { cookie } })
+      assert.equal(r.status, 200)
+      assert.equal(r.body, marker)
+    } finally {
+      await harness.close()
+    }
+  })
+
+  test('未认证的任何路径都不会拿到宿主外壳', async () => {
+    const harness = await startHarness({ shellBody: '<!doctype html><title>SECRET-SHELL</title>' })
+    try {
+      await login(harness)
+      for (const path of ['/', '/index.html']) {
+        const r = await request(harness.origin, path)
+        assert.doesNotMatch(r.body, /SECRET-SHELL/, `${path} 泄露了外壳`)
+      }
+    } finally {
+      await harness.close()
+    }
   })
 })
