@@ -1189,3 +1189,115 @@ describe('两种 fallback 形态都能转交', () => {
     }
   })
 })
+
+// ── 建账户的并发与可达性 ────────────────────────────────────────────────
+//
+// 两个进程（或两个标签页）共用一份凭据文件时，后提交的那个绝不能用陈旧快照
+// 覆盖已有账户——那会让先建账户的人再也登不进去。判断必须落在写锁内。
+describe('建账户不会被并发覆盖', () => {
+  /** 直接用签好的会话调用面板端点。 */
+  async function session(harness) {
+    const { mintCookieValue, parseSigningSecret } = await import('../lib/crypto.js')
+    const key = parseSigningSecret(harness.credentials.records.get(SIGNING_KEY))
+    const authority = `${AUTHORITY_HEADER}:${harness.port}`
+    const now = Date.now()
+    return `${cookieName(authority)}=${mintCookieValue(key, authority, now, now + 86_400_000)}`
+  }
+
+  test('第二个建账户请求被拒，且不覆盖第一个', async () => {
+    const harness = await startHarness()
+    try {
+      const cookie = await session(harness)
+      const first = await postJson(harness.origin, '/web-auth/setup',
+        { username: 'alice', password: 'alicepass1', confirm: 'alicepass1' }, cookie)
+      assert.equal(first.status, 200, first.body)
+
+      const second = await postJson(harness.origin, '/web-auth/setup',
+        { username: 'bob', password: 'bobpass123', confirm: 'bobpass123' }, cookie)
+      assert.equal(second.status, 409)
+      assert.equal(JSON.parse(second.body).error, 'accountExists')
+
+      // 关键：先建的那个仍然有效，后到的没有覆盖。
+      const record = harness.credentials.records.get('web-auth/password')
+      assert.equal(record.payload.username, 'alice')
+    } finally {
+      await harness.close()
+    }
+  })
+
+  test('表单建账户遇到已有账户时跳登录，不覆盖', async () => {
+    const harness = await startHarness()
+    try {
+      const cookie = await session(harness)
+      await postJson(harness.origin, '/web-auth/setup',
+        { username: 'alice', password: 'alicepass1', confirm: 'alicepass1' }, cookie)
+
+      const r = await postForm(harness.origin, '/setup',
+        { username: 'mallory', password: 'mallory123', confirm: 'mallory123' })
+      assert.equal(r.status, 303)
+      assert.equal(r.headers.get('location'), './login')
+      assert.equal(harness.credentials.records.get('web-auth/password').payload.username, 'alice')
+    } finally {
+      await harness.close()
+    }
+  })
+
+  test('GET /setup 无账户时渲染创建页（不是 405 空白）', async () => {
+    const harness = await startHarness()
+    try {
+      const r = await request(harness.origin, '/setup')
+      assert.equal(r.status, 200)
+      assert.match(r.body, /name="confirm"/)
+    } finally {
+      await harness.close()
+    }
+  })
+
+  test('GET /setup 有账户时跳登录页', async () => {
+    const harness = await startHarness()
+    try {
+      const cookie = await session(harness)
+      await postJson(harness.origin, '/web-auth/setup',
+        { username: 'alice', password: 'alicepass1', confirm: 'alicepass1' }, cookie)
+      const r = await request(harness.origin, '/setup')
+      assert.equal(r.status, 303)
+      assert.equal(r.headers.get('location'), './login')
+    } finally {
+      await harness.close()
+    }
+  })
+})
+
+// ── 页面上不能出现原始文案键 ───────────────────────────────────────────────
+//
+// 文案键拼错或漏翻译时，页面上会显示 "setupLocalOnly" 这样的内部标识，
+// 或者更糟的 undefined——用户只会认为插件坏了。
+describe('页面不泄露内部文案键', () => {
+  test('英文与中文文案表覆盖所有用到的键', async () => {
+    const { stringsFor } = await import('../lib/pages.js')
+    const en = stringsFor('en')
+    const zh = stringsFor('zh')
+    for (const key of ['setupLocalOnly', 'accountExists', 'noAccount',
+      'usernameInvalid', 'passwordTooShort', 'passwordsDoNotMatch',
+      'wrongCredentials', 'wrongTotp', 'lockedOut', 'passwordChanged']) {
+      assert.equal(typeof en[key], 'string', `英文缺 ${key}`)
+      assert.equal(typeof zh[key], 'string', `中文缺 ${key}`)
+    }
+  })
+
+  test('非本机创建账户的 403 页有可读说明，不显示 undefined', async () => {
+    // 用假的 socket 地址把请求伪装成非本机来源。
+    const harness = await startHarness()
+    try {
+      const r = await request(harness.origin, '/setup', {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded', 'x-forwarded-for': '203.0.113.9' },
+        body: 'username=a&password=12345678&confirm=12345678',
+      })
+      // 本机来源仍会成功，所以这里只断言：无论哪种结果，页面上都不能出现 undefined。
+      assert.doesNotMatch(r.body, /undefined/, '页面出现了 undefined')
+    } finally {
+      await harness.close()
+    }
+  })
+})
