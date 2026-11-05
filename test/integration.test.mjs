@@ -16,7 +16,9 @@ import { createServer } from 'node:http'
 import { randomBytes } from 'node:crypto'
 
 import { apply, Config } from '../lib/index.js'
-import { cookieName, encodeBase64Url, hashPassword, mintCookieValue } from '../lib/crypto.js'
+import {
+  cookieName, encodeBase64Url, hashPassword, mintCookieValue, parseSigningSecret,
+} from '../lib/crypto.js'
 
 const AUTHORITY_HEADER = '127.0.0.1'
 const SIGNING_KEY = 'client-connection/browser-session'
@@ -67,6 +69,32 @@ async function startHarness(options = {}) {
     kind: 'grant',
     payload: { version: 1, secret: encodeBase64Url(randomBytes(32)) },
   })
+
+  /** 服务器实际端口；listen 之后回填，供 cookie 名计算使用。 */
+  let serverPort = 0
+
+  /**
+   * 宿主要下发的会话 cookie 名。
+   *
+   * 必须用真实规则算出来（`dsh-auth-` + base64url(sha256(authority))）：插件靠
+   * 这个名字认领令牌兑换出的会话，名字对不上就永远认不到。
+   * @returns {string} cookie 名。
+   */
+  const issuedCookieName = () => cookieName(`${AUTHORITY_HEADER}:${serverPort}`)
+
+  /**
+   * 签一个宿主真会下发、且本插件验签能通过的值。
+   *
+   * 用占位串不行：插件在认领令牌会话前会先验签，占位串过不了，结果就是
+   * "令牌兑换成功但会话不被承认"。
+   * @returns {string} 会话 cookie 值。
+   */
+  const mintIssuedCookie = () => {
+    const key = parseSigningSecret(credentials.records.get(SIGNING_KEY))
+    const authority = `${AUTHORITY_HEADER}:${serverPort}`
+    const now = Date.now()
+    return mintCookieValue(key, authority, now, now + 86_400_000)
+  }
 
   /** 精确路由表。 */
   const exact = new Map()
@@ -167,7 +195,7 @@ async function startHarness(options = {}) {
             if (url.searchParams.has('token') && options.tokenExchange !== false) {
               return Promise.resolve(new Response(null, {
                 status: 303,
-                headers: { location: './', 'set-cookie': 'dsh-auth-test=v1.exchanged' },
+                headers: { location: './', 'set-cookie': `${issuedCookieName()}=${mintIssuedCookie()}` },
               }))
             }
           }
@@ -242,6 +270,22 @@ async function startHarness(options = {}) {
 
   await new Promise((resolve) => { server.listen(0, '127.0.0.1', resolve) })
   const port = server.address().port
+  serverPort = port
+
+  // options.remoteSource：把所有请求伪装成来自另一台机器（例如经 Tailscale 访问），
+  // 用来验证 bootstrapLoopbackOnly 的判定依据确实是来源地址。
+  if (options.remoteSource === true) {
+    const originalEmit = server.emit.bind(server)
+    server.emit = function patchedEmit(event, ...args) {
+      if (event === 'request' && args[0] !== undefined) {
+        const req = args[0]
+        Object.defineProperty(req.socket, 'remoteAddress', {
+          configurable: true, get: () => '100.64.0.10',
+        })
+      }
+      return originalEmit(event, ...args)
+    }
+  }
 
   return {
     port,
@@ -1166,7 +1210,7 @@ describe('两种 fallback 形态都能转交', () => {
       const r = await request(harness.origin, '/?token=abc')
       assert.equal(r.status, 303, '令牌必须由宿主兑换')
       assert.equal(r.headers.get('location'), './')
-      assert.match(r.headers.get('set-cookie') ?? '', /dsh-auth-test=v1\.exchanged/,
+      assert.match(r.headers.get('set-cookie') ?? '', /dsh-auth-[A-Za-z0-9_-]+=v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/,
         '宿主的 Set-Cookie 必须原样透传，否则兑换后依然没有会话')
     } finally {
       await harness.close()
@@ -1296,6 +1340,62 @@ describe('页面不泄露内部文案键', () => {
       })
       // 本机来源仍会成功，所以这里只断言：无论哪种结果，页面上都不能出现 undefined。
       assert.doesNotMatch(r.body, /undefined/, '页面出现了 undefined')
+    } finally {
+      await harness.close()
+    }
+  })
+})
+
+// ── 远程通过启动令牌建首个账户 ──────────────────────────────────────────
+//
+// `bootstrapLoopbackOnly` 防的是"陌生人抢先建账户"。但经启动令牌兑换出会话的人
+// 已经证明他能启动这个 dsh（令牌只有 `dsh web` 才打印）。用另一台机器、Tailscale
+// 或反代打开令牌地址的人如果仍被按"来源不是 loopback"拒绝，就会永远卡在创建页：
+// 会话有效、页面却要求本机来源。这条路径必须通。
+describe('启动令牌会话可以远程建首个账户', () => {
+  /** 用一个"远程"请求建立令牌会话并把 cookie 记进 harness。 */
+  async function tokenSession(harness) {
+    // 先走一次带 token 的请求，让插件截获宿主下发的 cookie。
+    const r = await request(harness.origin, '/?token=launch', {
+      headers: { 'x-forwarded-for': '203.0.113.9' },
+    })
+    return r
+  }
+
+  test('账号不存在时，令牌会话能完成建账户（来源非 loopback）', async () => {
+    // 用 resource 形态的假宿主：它会在兑换时真的下发会话 cookie。
+    const harness = await startHarness({ remoteSource: true, resourceFallback: true })
+    try {
+      // 走令牌：宿主下发 cookie（假宿主在 303 上给了 dsh-auth-test）。
+      const exchange = await request(harness.origin, '/?token=launch')
+      assert.equal(exchange.status, 303)
+      const cookie = cookieFrom(exchange)
+      assert.ok(cookie !== undefined, '令牌兑换应下发 cookie')
+
+      // 用该 cookie 建账户：即使来源不是 loopback 也必须成功。
+      const r = await postJson(harness.origin, '/web-auth/setup',
+        { username: 'remoteuser', password: 'remotepass1', confirm: 'remotepass1' }, cookie)
+      assert.equal(r.status, 200, r.body)
+      assert.equal(harness.credentials.records.get('web-auth/password').payload.username, 'remoteuser')
+    } finally {
+      await harness.close()
+    }
+  })
+
+  test('非令牌会话（例如密码登录）在远端仍被拒绝建账户', async () => {
+    const harness = await startHarness({ remoteSource: true })
+    try {
+      // 伪造一条"不是令牌换来"的会话。
+      const { mintCookieValue, parseSigningSecret } = await import('../lib/crypto.js')
+      const key = parseSigningSecret(harness.credentials.records.get(SIGNING_KEY))
+      const authority = `${AUTHORITY_HEADER}:${harness.port}`
+      const now = Date.now()
+      const forged = `${cookieName(authority)}=${mintCookieValue(key, authority, now, now + 86_400_000)}`
+
+      const r = await postJson(harness.origin, '/web-auth/setup',
+        { username: 'attacker', password: 'attackpass1', confirm: 'attackpass1' }, forged)
+      assert.equal(r.status, 403, '不是令牌来的会话不能建账户')
+      assert.equal(JSON.parse(r.body).error, 'setupLocalOnly')
     } finally {
       await harness.close()
     }
