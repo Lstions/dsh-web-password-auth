@@ -10,7 +10,7 @@
 
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { test } from 'node:test'
+import { describe, test } from 'node:test'
 import vm from 'node:vm'
 
 import react from 'react'
@@ -311,4 +311,27 @@ test('字典里没有空值', () => {
     assert.equal(typeof value, 'string', `EN.${key} 不是字符串`)
     assert.ok(value.length > 0, `EN.${key} 为空`)
   }
+})
+
+// ── 按钮必须始终看得见文字 ────────────────────────────────────────────
+//
+// 产品主题在深色模式下把 `--dsw-alias-brand-primary` 设成近白色
+// （neutral-bluish-50）。主按钮若写死 `color:#fff`，就是白底白字：按钮只剩
+// 一个灰块，用户以为功能坏了。前景必须用配对 token `brand-primary-invert`。
+describe('按钮配色', () => {
+  test('主按钮前景用配对 token，不写死白色', async () => {
+    const { STYLE_TEXT } = await import('./helpers/style.mjs')
+    const css = STYLE_TEXT()
+    assert.doesNotMatch(css, /\.wpa_primary\{[^}]*color:#fff/i,
+      '主按钮不能写死 #fff：深色主题下 brand-primary 是近白色')
+    assert.match(css, /\.wpa_primary\{[^}]*color:var\(--dsw-alias-brand-primary-invert\)/,
+      '主按钮前景必须用 brand-primary-invert')
+  })
+
+  test('禁用态不靠整体 opacity，避免文字看不清', async () => {
+    const { STYLE_TEXT } = await import('./helpers/style.mjs')
+    const css = STYLE_TEXT()
+    assert.doesNotMatch(css, /\.wpa_button:disabled\{[^}]*opacity\s*:\s*0?\.[0-9]/,
+      '禁用态不能整块降透明度，那会把文字一起压掉')
+  })
 })
