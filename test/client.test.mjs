@@ -315,7 +315,7 @@ test('字典里没有空值', () => {
 
 // ── 按钮必须始终看得见文字 ────────────────────────────────────────────
 //
-// 产品主题在深色模式下把 `--dsw-alias-brand-primary` 设成近白色
+// 产品主题在浅色模式下把 `--dsw-alias-brand-primary` 设成近黑色
 // （neutral-bluish-50）。主按钮若写死 `color:#fff`，就是白底白字：按钮只剩
 // 一个灰块，用户以为功能坏了。前景必须用配对 token `brand-primary-invert`。
 describe('按钮配色', () => {
@@ -324,8 +324,12 @@ describe('按钮配色', () => {
     const css = STYLE_TEXT()
     assert.doesNotMatch(css, /\.wpa_primary\{[^}]*color:#fff/i,
       '主按钮不能写死 #fff：深色主题下 brand-primary 是近白色')
-    assert.match(css, /\.wpa_primary\{[^}]*color:var\(--dsw-alias-brand-primary-invert\)/,
-      '主按钮前景必须用 brand-primary-invert')
+    // brand-primary-invert 在浅/深主题里都与 brand-primary 同值，用它等于没有前景色
+    // （浅色主题下就是黑底黑字）。已发布的 0.7.5 就是这个缺陷。
+    assert.doesNotMatch(css, /\.wpa_primary\{[^}]*brand-primary-invert/,
+      '主按钮不能用 brand-primary-invert：它与 brand-primary 同值，会变成不可见文字')
+    assert.match(css, /\.wpa_primary\{[^}]*color:var\(--dsw-alias-label-primary-foreground\)/,
+      '主按钮前景必须用 label-primary-foreground（与 ui-primitives 主按钮一致）')
   })
 
   test('禁用态不靠整体 opacity，避免文字看不清', async () => {

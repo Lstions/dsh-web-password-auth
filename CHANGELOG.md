@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.6
+
+Fixes primary buttons rendering as an unreadable solid block: the label used
+`--dsw-alias-brand-primary-invert`, which has the same value as
+`--dsw-alias-brand-primary` in both themes, so the text was black on black on the
+light theme and white on white on the dark one. The label now uses
+`--dsw-alias-label-primary-foreground`, the token `ui-primitives` uses for its own
+primary button (white on the light theme's near-black fill, near-black on the dark
+theme's near-white fill).
+
 ## 0.7.5
 
 Fixes a launch-token visit landing on **Create your account** instead of the app on a fresh
