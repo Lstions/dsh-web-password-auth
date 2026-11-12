@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.7.5
+
+Fixes a launch-token visit landing on **Create your account** instead of the app on a fresh
+installation, where the token URL is the only way in.
+
+- **The launch token now enters the app directly.** A session exchanged from the `?token=`
+  URL no longer passes through the first-run account gate: `/` hands it to the Host shell,
+  and creating the password account moves to **Settings → Security**, which already accepts
+  a token session. Opening the plain URL without a token on a machine with no account still
+  shows the creation page, and any session that did not come from the token still has to
+  create the account first.
+- The bypass is limited to sessions recorded at token exchange, so a Host-authenticated
+  browser that never exchanged the token keeps the first-run gate.
+
+## 0.7.4
+
+Fixes unreadable primary-button labels in dark mode: the label uses the paired foreground
+token instead of a hardcoded colour, so both themes stay legible.
+
+## 0.7.3
+
+Allows a session exchanged from the launch token to create the first account from a remote
+origin while `bootstrapLoopbackOnly` is on, and remembers token-exchanged sessions across
+restarts so the exemption survives a `dsh web` restart.
+
+## 0.7.2
+
+Makes first-run account creation reachable and race-free: `GET /setup` renders the page
+(a refresh or bookmark no longer answers 405 with an empty body), account creation decides
+existence inside the credential write lock so concurrent submissions cannot overwrite the
+first account, and the non-loopback 403 page no longer renders literal `undefined` keys.
+
+## 0.7.1
+
+Serves the Host shell through its new `{ resource }` fallback shape while keeping the older
+function fallback working, and fails closed with a readable 500 when the Host registered no
+frontend fallback.
+
+## 0.7.0
+
+Gates `/` and `/index.html` with exact routes instead of taking over the Host fallback seat,
+sends a signed-in visitor from `/login` back to the app, and raises the Host cookie cap from
+the plugin patch itself.
+
 ## 0.6.2
 
 Fixes `the Web frontend is not built` on hosts whose `webServer.renderIndex` takes a

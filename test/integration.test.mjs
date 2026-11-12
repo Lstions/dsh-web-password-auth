@@ -903,19 +903,40 @@ describe('用启动令牌进入后的首次建账户', () => {
     return `${cookieName(authority)}=${value}`
   }
 
-  test('尚无账户时，带有效会话访问首页仍先进首次设置', async () => {
+  test('尚无账户时，非令牌来源的会话仍先进首次设置', async () => {
+    // 这条会话是直接签出来的，不是启动令牌兑换来的：只有令牌来源才允许绕过建账户。
     const cookie = await tokenSession()
     const withSession = await request(harness.origin, '/', { headers: { cookie } })
     assert.equal(withSession.status, 200)
-    assert.match(withSession.body, /Create your account/, '无账户时有效会话也必须先设置')
+    assert.match(withSession.body, /Create your account/, '非令牌来源的有效会话仍必须先设置')
   })
 
   // 启动令牌是**完整旁路**（本机备用入口）。它必须始终能兑换，否则忘记口令时
-  // 本机再也进不去应用。无账户也不例外——兑换后浏览器拿到会话，再由 `/` 的
-  // 首次设置分支接管，两条路径不冲突。
+  // 本机再也进不去应用。无账户也不例外——兑换后浏览器拿到会话，`/` 直接放进
+  // 应用；建账户改为进入后在 设置 → 安全 里完成。
   test('带令牌的请求始终交宿主兑换，不被设置页拦截', async () => {
     const r = await request(harness.origin, '/?token=abc')
     assert.equal(r.status, 303, '令牌请求必须走到宿主，由它下发会话并重定向')
+  })
+
+  // 本轮回归：全新机器上安装 0.7.4，令牌地址兑换后仍被 `/` 的"先建账户"分支
+  // 拦到创建页。令牌会话应当直接拿到应用外壳。
+  test('启动令牌兑换出的会话直接进入应用，不跳创建账户', async () => {
+    const shell = '<!doctype html><title>APP-SHELL-BY-TOKEN</title>'
+    const tokenHarness = await startHarness({ resourceFallback: true, shellBody: shell })
+    try {
+      const exchange = await request(tokenHarness.origin, '/?token=abc')
+      assert.equal(exchange.status, 303, '宿主必须先兑换令牌')
+      const cookie = cookieFrom(exchange)
+      assert.ok(cookie, '兑换必须下发会话 cookie')
+
+      const app = await request(tokenHarness.origin, '/', { headers: { cookie } })
+      assert.equal(app.status, 200)
+      assert.equal(app.body, shell, '令牌会话应直接拿到宿主外壳')
+      assert.doesNotMatch(app.body, /Create your account/, '令牌会话不应再被创建账户页拦住')
+    } finally {
+      await tokenHarness.close()
+    }
   })
 
   test('账户建立后，带令牌访问才直接进应用', async () => {
