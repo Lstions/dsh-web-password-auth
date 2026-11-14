@@ -1,0 +1,41 @@
+name: publish
+
+# Route C: publish through npm Trusted Publishing (OIDC).
+# Trusted Publisher can only be configured on an existing package, so the first
+# release (0.8.0) was published manually. For the next release:
+#   1. npmjs.com -> package Settings -> Trusted Publisher -> GitHub Actions
+#      owner: Lstions, repo: dsh-web-password-auth, workflow: publish.yml
+#      allow: npm publish
+#   2. Run this workflow (or push a v* tag) within 2 days of creating the trust.
+#   3. Then set the package to "Require 2FA and disallow tokens".
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Install
+        run: pnpm install --no-frozen-lockfile
+      - name: Tests
+        run: node --test "test/*.test.mjs"
+      - name: Publish (OIDC, no token)
+        run: pnpm publish --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ''
