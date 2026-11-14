@@ -1,6 +1,6 @@
 {
   "name": "dsh-web-password-auth",
-  "version": "0.7.6",
+  "version": "0.8.0",
   "private": false,
   "description": "Username and password sign-in for the DeepSeek Harness Web UI, with persistent sessions, an in-app security settings page, and optional TOTP two-factor authentication",
   "type": "module",
@@ -43,7 +43,8 @@
     "test": "node --test \"test/*.test.mjs\""
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20",
+    "dsh": ">=0.2.1 <0.3.0-0"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2"
@@ -54,7 +55,7 @@
     }
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "3.18.5",
+    "@deepseek-ai/schemastery": "^3.18.5",
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
@@ -79,5 +80,9 @@
     "two-factor",
     "password",
     "cordis"
-  ]
+  ],
+  "publishConfig": {
+    "access": "public",
+    "tag": "latest"
+  }
 }

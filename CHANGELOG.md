@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.0
+
+Packaging and documentation release (no behaviour change):
+
+- Add `engines.dsh` (`>=0.2.1 <0.3.0-0`) so DSH's compatibility gate judges the
+  runtime version instead of silently passing every host.
+- Widen the `@deepseek-ai/schemastery` dependency from an exact pin to `^3.18.5`,
+  so a host upgrade does not install a second copy of the schema library.
+- Add `publishConfig` (`access: public`, tag `latest`) for the first npm release.
+- README: registry install command, remove the `/account` instructions that
+  contradicted the in-app account surface, document the real TOTP QR flow, and
+  correct the test count (121).
+
 ## 0.7.6
 
 Fixes primary buttons rendering as an unreadable solid block: the label used

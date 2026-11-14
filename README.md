@@ -17,6 +17,15 @@ Optional TOTP two-factor authentication.
 
 ## Install
 
+From the npm registry:
+
+```sh
+dsh plugin --profile web add dsh-web-password-auth@0.8.0
+# then restart dsh --profile web
+```
+
+Or from a local checkout (development):
+
 ```sh
 dsh plugin --profile web add /absolute/path/to/dsh-web-password-auth
 ```
@@ -150,7 +159,8 @@ The launch token is the recovery path:
 
 1. Look at the terminal where `dsh web` is running; it prints a URL with `?token=...`
 2. Open it — the Host exchanges the token for a cookie and signs you in
-3. Go to `/account` and set a new password
+3. Open **Settings → Security (安全)** and set a new password (there is no
+   standalone `/account` page)
 
 This works because both entry points require the same thing: access to this machine.
 If the process is supervised and its stdout is discarded, delete the
@@ -198,11 +208,12 @@ expected shape.
 - Sessions are validated against an in-memory copy of the signing key. The plugin
   re-reads it after it triggers a revocation, but an external key rotation needs a
   restart of the row.
-- The `/account` page is plain server-rendered HTML, not part of the SPA settings
-  dialog. The SPA cannot host it: unauthenticated visitors never receive
-  `index.html`, so no client code runs.
-- No QR code for TOTP enrolment; the page shows the base32 secret and the
-  `otpauth://` URI for manual entry.
+- Account management is an in-app surface (Settings → Security, and the plugin's
+  own page under Plugins). There is no standalone `/account` page: an
+  unauthenticated visitor never receives `index.html`, so the SPA cannot host
+  pre-login pages — sign-in and first-run setup are the Host's own pages.
+- TOTP enrolment renders a QR code (server-rendered SVG data URI) next to the
+  base32 secret; the `otpauth://` URI is also shown for manual entry.
 
 ## Tests
 
@@ -210,7 +221,7 @@ expected shape.
 node --test "test/*.test.mjs"
 ```
 
-47 cases: cookie round-trip and rejection paths, scrypt, TOTP against the RFC 6238
+121 cases: cookie round-trip and rejection paths, scrypt, TOTP against the RFC 6238
 vectors, the bootstrap flow, sign-in, rate limiting, password change, two-factor
 enrolment and replay rejection, Chinese localisation, and HTTP method handling.
 
