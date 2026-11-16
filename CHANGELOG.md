@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.8.2
+
+Fixes **"signed in, then every request answers 401 `unauthorized`"** on Hosts newer than
+0.2.2-rc.3, which moved the browser-cookie cap onto a separate `authentication-token` row
+(default 30 days) while `connection.cookieMaxAgeDays` stayed where it was:
+
+- The plugin now takes the **strictest** `cookieMaxAgeDays` across every Loader row instead
+  of reading only `connection`. Before, it read 365 (the value its own patch writes) while
+  the Host enforced 30, so it minted year-long cookies the Host rejects on every request —
+  sign-in looked successful and then the whole UI returned 401 `unauthorized`.
+- The bundle patch also raises `authentication-token.cookieMaxAgeDays` to 365, so year-long
+  sessions keep working on those Hosts. That row does not exist on older Hosts, where an
+  unmatched patch is a no-op (verified: no boot warning).
+- The startup warning now names the row that actually caps the session.
+
+Verified on master: 30/40/365-day cookies all reach the shell, anonymous requests still get
+the login page, `/web-auth/status` reports the effective cap. On 0.2.2-rc.3: token → 303,
+shell → 200, asset → 200, 121/121 tests.
+
 ## 0.8.1
 
 Fixes **HTTP 500 `internal error`** on DSH builds newer than 0.2.2-rc.3 (master), where the

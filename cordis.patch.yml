@@ -46,6 +46,13 @@
 # Raise the Host's browser-cookie cap so long-lived sessions survive. This row
 # must stay AFTER the insert above; it targets the connection row the bundle
 # already declared.
+#
+# 0.2.2 之后的宿主把认证拆成了独立的 `authentication-token` 行，cookie 上限落在
+# 那一行上（默认 30 天）；只改 connection 的话插件签 365 天的 cookie 会被宿主判
+# 401 "unauthorized"。旧宿主没有这一行，patch 未命中只会告警，不影响启动。
+- id: authentication-token
+  config:
+    cookieMaxAgeDays: 365
 - id: connection
   config:
     trustedHosts: !!js ctx.webStartup.trustedHosts

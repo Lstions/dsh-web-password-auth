@@ -34,14 +34,14 @@ Then restart `dsh --profile web` and open the UI. The first visit shows
 **Create your account**.
 
 The plugin reads the Host's effective `cookieMaxAgeDays` from the Loader at startup and
-**uses the smaller of the two**. Without that, a mismatch would produce cookies the Host
-rejects — sign-in would look successful and then fail on every request.
+**uses the smallest value it finds on any row**. Without that, a mismatch would produce
+cookies the Host rejects — sign-in would look successful and then fail on every request.
 
 ### Making sessions last until sign-out
 
-The Host caps cookie lifetime with `connection.cookieMaxAgeDays` (default 30). This
-plugin's `sessionDays` must stay **at or under** that cap, or the Host rejects the
-cookie with 401. To get year-long sessions, raise both in your profile patch
+The Host caps cookie lifetime with `cookieMaxAgeDays` (default 30). This plugin's
+`sessionDays` must stay **at or under** that cap, or the Host rejects the cookie with 401.
+To get year-long sessions, raise the cap in your profile patch
 (`$DSH_HOME/profiles/web/cordis.patch.yml`):
 
 ```yaml
@@ -51,6 +51,19 @@ cookie with 401. To get year-long sessions, raise both in your profile patch
     trustedHosts: !!js ctx.webStartup.trustedHosts
     cookieMaxAgeDays: 365
 ```
+
+Hosts newer than `0.2.2-rc.3` enforce the cap on a **separate `authentication-token` row**
+(default 30) and ignore `connection.cookieMaxAgeDays` for this purpose, so raise that row
+too — this plugin's own bundle patch already does:
+
+```yaml
+- id: authentication-token
+  config:
+    cookieMaxAgeDays: 365
+```
+
+The plugin clamps to the strictest cap it can see and logs which row imposed it, so a
+missing entry shows up as a shorter session (never as an unusable cookie).
 
 ## Configuration
 
