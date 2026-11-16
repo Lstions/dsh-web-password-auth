@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.8.1
+
+Fixes **HTTP 500 `internal error`** on DSH builds newer than 0.2.2-rc.3 (master), where the
+Host moved request admission into `webServer` and removed `connection.requestRejection`:
+
+- `isAuthenticated` now **feature-detects** `connection.requestRejection`. On a Host that
+  removed it the call threw `TypeError: ... is not a function`, which the request guard
+  turned into `500 internal error` for every page — the exact reported symptom.
+- Named routes are registered with an explicit **auth policy**. Newer Hosts default every
+  named route to `required`, so the plugin's own pages were answered `401 unauthorized`
+  before the plugin ever saw them. Shell routes (`/`, `/index.html`) now use a per-request
+  policy — `required` when the request carries a valid session (the Host then hands over a
+  Peer), `anonymous` otherwise; `/login`, `/setup` and `/web-auth/*` stay `anonymous`.
+  Older Hosts ignore the field entirely.
+- The admitted **Peer is forwarded** to the Host shell. `frontend-static` renders with
+  `peer.signal` and throws `TypeError: Cannot read properties of undefined (reading
+  'signal')` when it receives `undefined`.
+- `cameFromLaunchToken` recognises token-exchanged sessions on newer Hosts by "the Host
+  admitted it and we did not mint it", because those Hosts handle `?token=` in a
+  `webserver/request` waterfall **before** routing, so the plugin no longer sees the
+  exchange to record it.
+
+Verified end to end on 0.2.2-rc.3 (published) and on master: token exchange → 303,
+shell → 200, static asset → 200, bogus cookie → login page (never the app).
+
 ## 0.8.0
 
 Packaging and documentation release (no behaviour change):

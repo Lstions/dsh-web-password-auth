@@ -75,7 +75,21 @@ Both fallback shapes the Host has shipped are supported:
 | Host | Fallback type | Handled by |
 |---|---|---|
 | up to `0.2.1` | `(req, res) => void` | called directly |
-| `0.2.2` and later | `{ resource(request, peer) }` returning a Fetch `Response` | request built, resource called without a peer, response written back |
+| `0.2.2` and later | `{ resource(request, peer) }` returning a Fetch `Response` | request built, the admitted peer forwarded, response written back |
+
+Hosts newer than `0.2.2-rc.3` moved request admission into `webServer` and changed three
+things this plugin depends on, so 0.8.1 detects them instead of assuming the old shapes:
+
+- **Named routes default to `required`.** A route without an `auth` policy is answered
+  `401 unauthorized` before its handler runs. The plugin therefore registers its own pages
+  as `anonymous` (it authenticates every request itself) and only asks the Host for a Peer
+  on the shell routes, where one exists.
+- **`connection.requestRejection` was removed.** It is feature-detected; the Host/Origin
+  fence now lives in admission.
+- **`frontend-static` renders with `peer.signal`.** An authenticated request must hand the
+  admitted Peer to the fallback, or rendering throws.
+
+Older Hosts ignore all three adaptations, so one build runs on both.
 
 `set-cookie` is appended rather than overwritten, so launch-token exchange keeps every cookie
 it returns. Old and new Hosts run the same build.
