@@ -210,6 +210,11 @@ shows the setup page again.
   the username is a label on one shared credential, not an account system.
 - Failed sign-ins are counted in memory per source address. A restart clears the
   counters.
+- **The pages declare `Referrer-Policy: same-origin`, never `no-referrer`.** A document with
+  `no-referrer` makes the browser submit its native forms with `Origin: null`; the Host's
+  browser-trust fence rejects that as an opaque origin `403 forbidden` before the password is
+  ever checked. `same-origin` still sends no `Referer` cross-site, so nothing is leaked
+  off-origin.
 
 ## How it hooks in without patching the Host
 

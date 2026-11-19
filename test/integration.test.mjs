@@ -330,6 +330,24 @@ function postJson(origin, path, fields, cookie) {
   })
 }
 
+/**
+ * 断言一个 HTML 文档的 referrer 策略允许它的原生表单提交带上真实 Origin。
+ *
+ * 浏览器对"文档 referrer 策略为 no-referrer"的页面做原生表单提交时，会把这次
+ * 导航当成不透明来源，于是请求带 `Origin: null`。宿主的浏览器信任围栏把 null
+ * 判为跨站来源并直接回 403 forbidden（client-connection/api-request-trust.ts），
+ * 请求根本到不了本插件的密码校验——症状就是"密码永远输不对"。
+ * 0.8.2 及更早版本在响应头和 <meta> 上都下发 no-referrer，正好踩中这条。
+ * @param {{headers: Headers, body: string}} page - 响应。
+ * @param {string} label - 断言里的页面称呼。
+ */
+function assertFormOriginPolicy(page, label) {
+  assert.equal(page.headers.get('referrer-policy'), 'same-origin', `${label}的响应头 referrer-policy`)
+  // 只断言 <meta> 的取值：页面里的说明性注释也会提到 no-referrer。
+  assert.doesNotMatch(page.body, /<meta[^>]+content=["']?no-referrer/i, `${label} 的 <meta> 不得是 no-referrer`)
+  assert.match(page.body, /<meta name="referrer" content="same-origin">/, `${label} 的 <meta name=referrer>`)
+}
+
 /** 用表单编码发 POST。 */
 function postForm(origin, path, fields, cookie) {
   return request(origin, path, {
@@ -665,6 +683,31 @@ describe('安全边界', () => {
     const r = await request(harness.origin, '/')
     assert.equal(r.headers.get('cache-control'), 'no-store')
     await harness.close()
+  })
+
+  // 回归：0.8.2 的登录页/建账户页在响应头与 <meta> 上都下发 no-referrer，浏览器
+  // 因此把表单 POST 当成不透明来源，带 Origin: null；宿主的浏览器信任围栏直接
+  // 403 forbidden，密码校验一次都没执行，表现为"输对密码也 forbidden"。
+  test('登录页与建账户页的 referrer 策略必须让表单提交带上真实 Origin', async () => {
+    const harness = await startHarness()
+    try {
+      const setup = await request(harness.origin, '/')
+      assert.equal(setup.status, 200)
+      assertFormOriginPolicy(setup, '建账户页')
+
+      await postForm(harness.origin, '/setup',
+        { username: 'admin', password: 'correct horse', confirm: 'correct horse' })
+      const login = await request(harness.origin, '/')
+      assert.equal(login.status, 200)
+      assertFormOriginPolicy(login, '登录页')
+
+      // 校验失败时重渲染的页面同样是表单页面，策略不能在这种分支上跑偏。
+      const failed = await postForm(harness.origin, '/login', { username: 'admin', password: 'wrong one' })
+      assert.equal(failed.status, 401)
+      assertFormOriginPolicy(failed, '登录失败页')
+    } finally {
+      await harness.close()
+    }
   })
 
   test('未知方法返回 405 而不是崩溃', async () => {

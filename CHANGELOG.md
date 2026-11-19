@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.8.3
+
+Fixes **"signing in always shows the bare text `forbidden`"**: the login page blocked its own
+form submission before any credential check ran.
+
+- The login and first-run pages shipped `Referrer-Policy: no-referrer` — in the response
+  header *and* in `<meta name="referrer">`. Browsers treat a native form submission from a
+  document whose referrer policy is `no-referrer` as an opaque origin, so `POST /login`
+  arrived with **`Origin: null`**. The Host's browser-trust fence refuses `null` as an opaque
+  origin (`api-request-trust.ts`: `new URL('null')` throws → deny 403) and the webserver writes
+  the 9-byte body `forbidden`. The password verifier never ran, so every credential on every
+  browser and device produced the same 403. GET was unaffected — the form rendered fine and
+  only the `?token=` URL printed by `dsh web` could get in.
+- Both places now declare **`same-origin`**. Cross-site requests still send no `Referer`, but
+  a same-origin form submission carries its real `Origin`, which the fence accepts. Redirect
+  responses keep `no-referrer` (a redirect's policy does not become the target document's
+  policy — verified in Chromium), so one-shot `?token=` URLs still cannot leak through
+  `Referer`.
+- New regression test asserts the header and the `<meta>` on the first-run page, the login
+  page, and the re-rendered login-failure page. It fails on 0.8.2 (verified).
+
+Verified in a real Chromium: with 0.8.2 `POST /login` carried `Origin: null` and got
+`403 forbidden`; with this fix it carries the page's own origin, passes the Host's
+`isTrustedApiRequest` fence, and lands in the shell. A/B on otherwise identical pages isolates
+the cause: `no-referrer` in either the header or the meta alone produces `Origin: null`;
+`same-origin` in either restores a real origin.
+
 ## 0.8.2
 
 Fixes **"signed in, then every request answers 401 `unauthorized`"** on Hosts newer than
